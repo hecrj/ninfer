@@ -342,10 +342,10 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
             try {
                 transport.write(stream->encoder->start());
                 StreamSink output;
-                output.on_reasoning = [&](const std::string& text) {
+                output.on_reasoning = [&](const std::string& text, std::uint32_t) {
                     transport.write(stream->encoder->reasoning_delta(text));
                 };
-                output.on_content = [&](const std::string& text) {
+                output.on_content = [&](const std::string& text, std::uint32_t) {
                     transport.write(stream->encoder->content_delta(text));
                 };
                 output.is_cancelled = [&] { return transport.poll(); };

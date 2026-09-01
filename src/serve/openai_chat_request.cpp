@@ -861,6 +861,12 @@ void parse_stream_options(const Json& body, OpenAIChatRequest& output) {
     }
 }
 
+void parse_timings_per_token(const Json& body, OpenAIChatRequest& output) {
+    // llama.cpp-compatible streaming diagnostics: attach cumulative timings to every streamed
+    // chunk. The terminal chunk always carries the exact Engine completion timings.
+    output.timings_per_token = get_bool(body, "timings_per_token", false);
+}
+
 void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAIChatRequest& output) {
     std::optional<int> limit = optional_int(body, "max_completion_tokens");
     const char* param        = "max_completion_tokens";
@@ -901,6 +907,7 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_stop(body, output.generation);
     parse_sampling(body, output.generation);
     parse_stream_options(body, output);
+    parse_timings_per_token(body, output);
     parse_output_limit(body, limits, output);
     parse_reasoning_effort(body, output.generation);
     const TemplateOptions template_options = parse_template_options(body);

@@ -130,10 +130,10 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 output.on_start = [&](const ninfer::GenerationStart& start) {
                     transport.write(encoder->start(start));
                 };
-                output.on_reasoning = [&](const std::string& text) {
+                output.on_reasoning = [&](const std::string& text, std::uint32_t) {
                     transport.write(encoder->reasoning_delta(text));
                 };
-                output.on_content = [&](const std::string& text) {
+                output.on_content = [&](const std::string& text, std::uint32_t) {
                     transport.write(encoder->content_delta(text));
                 };
                 output.is_cancelled = [&] { return transport.poll(); };

@@ -659,11 +659,19 @@ private:
         const bool streaming = request->consumer_mode == OutputConsumerMode::Streaming;
         {
             std::lock_guard lock(request->mutex);
+            bool first_streamed = true;
             for (OutputDelta& delta : output) {
                 std::string& full = delta.channel == OutputChannel::Reasoning ? request->reasoning
                                                                               : request->content;
                 full += delta.text;
-                if (streaming) { request->events.push_back(std::move(delta)); }
+                if (!streaming) { continue; }
+                // Attribute the round's committed-token total to the first published delta of
+                // the batch; consumers summing committed_tokens recover the exact total.
+                if (first_streamed) {
+                    delta.committed_tokens = output.token_count;
+                    first_streamed         = false;
+                }
+                request->events.push_back(std::move(delta));
             }
         }
         if (streaming) { request->cv.notify_one(); }

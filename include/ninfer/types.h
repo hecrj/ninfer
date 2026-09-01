@@ -475,6 +475,12 @@ enum class FinishReason : std::uint8_t {
 struct OutputDelta {
     OutputChannel channel = OutputChannel::Content;
     std::string text;
+    // Output tokens committed to the sequence by the Engine round that produced this delta:
+    // accepted model tokens plus any injected thinking-control tokens of that round. The round
+    // total is attributed to the first published delta of the round (zero on any further delta
+    // of the same round), so summing committed_tokens over every published delta of one request
+    // yields the exact committed output-token total.
+    std::uint32_t committed_tokens = 0;
 };
 
 // Exact prompt accounting selected at admission. Streaming consumers receive this once before any

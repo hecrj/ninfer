@@ -56,9 +56,12 @@ struct GenerationOutcome {
 };
 
 struct StreamSink {
+    // Delta callbacks carry the round's committed output-token count (see OutputDelta
+    // committed_tokens) so streaming adapters can accumulate live token statistics.
     std::function<void(const ninfer::GenerationStart& start)> on_start;
-    std::function<void(const std::string& delta_text)> on_content;
-    std::function<void(const std::string& delta_text)> on_reasoning;
+    std::function<void(const std::string& delta_text, std::uint32_t committed_tokens)> on_content;
+    std::function<void(const std::string& delta_text, std::uint32_t committed_tokens)>
+        on_reasoning;
     std::function<bool()> is_cancelled;
 };
 

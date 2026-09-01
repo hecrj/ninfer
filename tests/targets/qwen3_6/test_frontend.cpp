@@ -1563,6 +1563,7 @@ int test_cross_round_stop(const Frontend& frontend) {
     const auto first = session.commit_preview();
     failures += check(channel_text(first, ninfer::OutputChannel::Content) == "hello",
                       "cross-round stop did not retain the ambiguous suffix");
+    failures += check(first.token_count == 1, "first committed round reported its token count");
 
     const auto second_decision = session.preview_model(std::array<ninfer::TokenId, 1>{2}, 1,
                                                        ninfer::FinishReason::OutputLimit);
@@ -1571,6 +1572,8 @@ int test_cross_round_stop(const Frontend& frontend) {
                       "cross-round stop did not select the exact terminal token prefix");
     const auto second = session.commit_preview();
     failures += check(second.empty(), "stop marker or same-token suffix leaked to output");
+    failures += check(second.token_count == 1,
+                      "terminal stop round still reported its committed token count");
     failures += check(session.matched_stop_string() == std::optional<std::string>("STOP"),
                       "terminal output session lost the matched stop declaration");
     return failures;
@@ -1723,6 +1726,8 @@ int test_thinking_budget_control(const Frontend& frontend) {
     const auto model_output = session.commit_preview();
     failures += check(channel_text(model_output, ninfer::OutputChannel::Reasoning) == "xx",
                       "model-origin thinking output was not published before control");
+    failures += check(model_output.token_count == model_tokens.size(),
+                      "model round committed its accepted token count exactly once");
 
     const std::span<const ninfer::TokenId> pending = session.pending_control_tokens();
     failures += check(pending.size() > 1,
@@ -1744,6 +1749,8 @@ int test_thinking_budget_control(const Frontend& frontend) {
                               kThinkingControlGuidance &&
                           channel_text(control_output, ninfer::OutputChannel::Content).empty(),
                       "thinking control was truncated by caller stops or published to content");
+    failures += check(control_output.token_count == control.size(),
+                      "injected thinking control reported its exact token count");
     const ninfer::ThinkingBudgetStats stats = session.thinking_stats();
     failures += check(stats.configured_budget == 2 && stats.model_thinking_tokens == 2 &&
                           stats.injected_tokens == control.size() && stats.applied &&
@@ -1758,6 +1765,8 @@ int test_thinking_budget_control(const Frontend& frontend) {
     const auto content_output = session.commit_preview();
     failures += check(channel_text(content_output, ninfer::OutputChannel::Content) == "x",
                       "post-control model output did not enter the content channel");
+    failures += check(content_output.token_count == 1,
+                      "post-control model round reported its committed token count");
 
     auto natural_prompt  = thinking_prompt(frontend);
     auto natural_session = frontend.make_output_session(

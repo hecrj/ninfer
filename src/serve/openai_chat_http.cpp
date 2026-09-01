@@ -79,7 +79,8 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     }
 
     auto stream  = std::make_shared<HttpGenerationStream>(std::move(prepared));
-    auto encoder = std::make_shared<OpenAIChatStream>(identity, request.include_usage);
+    auto encoder = std::make_shared<OpenAIChatStream>(identity, request.include_usage,
+                                                      request.timings_per_token);
 
     prepare_sse_response(res);
     res.set_chunked_content_provider(
@@ -94,11 +95,14 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
             try {
                 transport.write(encoder->start());
                 StreamSink output;
-                output.on_content = [&](const std::string& text) {
-                    transport.write(encoder->content_delta(text));
+                output.on_start = [&](const ninfer::GenerationStart& start) {
+                    encoder->note_start(start);
                 };
-                output.on_reasoning = [&](const std::string& text) {
-                    transport.write(encoder->reasoning_delta(text));
+                output.on_content = [&](const std::string& text, std::uint32_t committed_tokens) {
+                    transport.write(encoder->content_delta(text, committed_tokens));
+                };
+                output.on_reasoning = [&](const std::string& text, std::uint32_t committed_tokens) {
+                    transport.write(encoder->reasoning_delta(text, committed_tokens));
                 };
                 output.is_cancelled = [&] { return transport.poll(); };
 

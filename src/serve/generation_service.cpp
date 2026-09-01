@@ -210,9 +210,9 @@ public:
     void publish(ninfer::OutputDelta delta) override {
         if (delta.text.empty()) { return; }
         if (delta.channel == ninfer::OutputChannel::Reasoning) {
-            if (sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
+            if (sink_->on_reasoning) { sink_->on_reasoning(delta.text, delta.committed_tokens); }
         } else {
-            if (sink_->on_content) { sink_->on_content(delta.text); }
+            if (sink_->on_content) { sink_->on_content(delta.text, delta.committed_tokens); }
         }
     }
 

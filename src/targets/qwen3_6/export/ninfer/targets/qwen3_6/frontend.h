@@ -82,6 +82,11 @@ public:
     void clear() noexcept;
     void push_back(OutputDelta value);
 
+    // Output tokens committed by the preview cycle that produced this batch: the accepted model
+    // tokens plus any injected thinking-control tokens, exactly once per committed token. Zero
+    // for terminal-only commits.
+    std::uint32_t token_count = 0;
+
 private:
     std::array<OutputDelta, 2> values_{};
     std::size_t size_ = 0;

@@ -943,6 +943,10 @@ public:
     SemanticThinkingState semantic;
     SemanticThinkingState preview_semantic;
     PublishedOutput preview_output;
+    // Output tokens committed by the active preview cycle (accepted model tokens plus any
+    // injected thinking-control tokens). Stamped onto the next commit_preview batch, which is
+    // the exact per-round committed count the Engine forwards to streaming consumers.
+    std::uint32_t preview_committed_tokens = 0;
     fi::ToolCallOutputDecoder tool_call_output;
     std::vector<GeneratedToolCall> tool_calls;
     bool preview_ready = false;
@@ -995,19 +999,22 @@ PromptPreparationStats PreparedPrompt::preparation_stats() const noexcept {
 PreparedPrompt::operator bool() const noexcept { return data_ != nullptr; }
 
 PublishedOutput::PublishedOutput(PublishedOutput&& other) noexcept
-    : values_(std::move(other.values_)), size_(std::exchange(other.size_, 0)) {}
+    : values_(std::move(other.values_)), size_(std::exchange(other.size_, 0)),
+      token_count(std::exchange(other.token_count, 0)) {}
 
 PublishedOutput& PublishedOutput::operator=(PublishedOutput&& other) noexcept {
     if (this != &other) {
-        values_ = std::move(other.values_);
-        size_   = std::exchange(other.size_, 0);
+        values_     = std::move(other.values_);
+        size_       = std::exchange(other.size_, 0);
+        token_count = std::exchange(other.token_count, 0);
     }
     return *this;
 }
 
 void PublishedOutput::clear() noexcept {
     for (std::size_t index = 0; index < size_; ++index) { values_[index] = {}; }
-    size_ = 0;
+    size_       = 0;
+    token_count = 0;
 }
 
 void PublishedOutput::push_back(OutputDelta value) {
@@ -1052,6 +1059,7 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
                               runtime::ContinuationAction continuation =
                                   runtime::ContinuationAction::Decode) {
         if (reason != FinishReason::None) { impl_->preview_semantic.control_pending = false; }
+        impl_->preview_committed_tokens = count;
         impl_->preview_ready = true;
         return runtime::OutputDecision{
             .accepted_tokens = count, .finish_reason = reason, .continuation = continuation};
@@ -1175,6 +1183,7 @@ runtime::OutputDecision OutputSession::preview_control(std::span<const TokenId> 
     impl_->preview_semantic.control_pending = false;
     impl_->preview_semantic.applied         = true;
     impl_->preview_semantic.injected_tokens = static_cast<std::uint32_t>(tokens.size());
+    impl_->preview_committed_tokens         = static_cast<std::uint32_t>(tokens.size());
     impl_->preview_ready                    = true;
     return runtime::OutputDecision{.accepted_tokens = static_cast<std::uint32_t>(tokens.size())};
 }
@@ -1209,6 +1218,7 @@ runtime::OutputDecision OutputSession::preview_terminal(FinishReason reason) {
     impl_->preview_semantic.control_pending = false;
     impl_->preview_output.clear();
     terminalize(impl_->preview_state, impl_->policy, impl_->preview_output, 0);
+    impl_->preview_committed_tokens = 0;
     impl_->preview_ready = true;
     return runtime::OutputDecision{.accepted_tokens = 0, .finish_reason = reason};
 }
@@ -1221,6 +1231,8 @@ PublishedOutput OutputSession::commit_preview() {
     PublishedOutput output = std::move(impl_->preview_output);
     impl_->preview_output.clear();
     impl_->preview_ready = false;
+    output.token_count   = impl_->preview_committed_tokens;
+    impl_->preview_committed_tokens = 0;
 
     for (OutputDelta& delta : output) {
         if (delta.channel == OutputChannel::Content) {

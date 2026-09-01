@@ -111,13 +111,26 @@ int test_request_envelope_and_sampling() {
     const OpenAIChatRequest defaults = parse(base_request());
     failures +=
         check(!defaults.stream && !defaults.include_usage && !defaults.output_tokens_explicit &&
+                  !defaults.timings_per_token &&
                   defaults.generation.max_tokens == limits().default_max_tokens,
               "protocol defaults remain outside GenerationRequest");
+
+    body                          = base_request();
+    body["timings_per_token"]     = true;
+    const OpenAIChatRequest per_token = parse(body);
+    failures += check(per_token.timings_per_token, "timings_per_token=true parsed");
+    body["timings_per_token"]     = nullptr;
+    failures += check(!parse(body).timings_per_token, "timings_per_token=null uses default");
 
     Json malformed              = base_request();
     malformed["stream_options"] = true;
     failures += check(api_error([&] { (void)parse(malformed); }).param == "stream_options",
                       "malformed stream_options rejected");
+    malformed                   = base_request();
+    malformed["timings_per_token"] = "yes";
+    failures +=
+        check(api_error([&] { (void)parse(malformed); }).param == "timings_per_token",
+              "non-boolean timings_per_token rejected");
     return failures;
 }
 
@@ -576,10 +589,17 @@ GenerationOutcome sample_outcome() {
     outcome.text                            = "answer";
     outcome.reasoning                       = "thought";
     outcome.prompt_tokens                   = 20;
-    outcome.completion_tokens               = 7;
+    outcome.completion_tokens               = 6;
     outcome.reasoning_tokens                = 3;
     outcome.finish_reason                   = ninfer::FinishReason::StopToken;
     outcome.metrics.prefix_cache_hit_tokens = 12;
+    // Binary-exact durations so the derived rates are exact doubles: 31.25 ms prefill over
+    // 20 - 12 = 8 computed prompt tokens; 62.5 ms decode over 6 - 1 = 5 decode steps (the
+    // first output token is produced by the prefill batch).
+    outcome.metrics.prefill_seconds    = 0.03125;
+    outcome.metrics.decode_seconds     = 0.0625;
+    outcome.metrics.speculative_draft_tokens    = 9;
+    outcome.metrics.speculative_accepted_tokens = 5;
     return outcome;
 }
 
@@ -600,6 +620,20 @@ int test_aggregate_response() {
     failures += check(response["usage"]["prompt_tokens_details"]["cached_tokens"] == 12 &&
                           response["usage"]["completion_tokens_details"]["reasoning_tokens"] == 3,
                       "aggregate usage exposes cache hits and reasoning tokens");
+    const Json& timings = response["timings"];
+    failures += check(timings["cache_n"] == 12 && timings["prompt_n"] == 8,
+                      "timings split the prompt into cached and computed tokens");
+    failures += check(timings["prompt_ms"] == 31.25 &&
+                          timings["prompt_per_token_ms"] == 3.90625 &&
+                          timings["prompt_per_second"] == 256.0,
+                      "prompt rates derive from computed tokens and prefill duration");
+    failures += check(timings["predicted_n"] == 6 && timings["predicted_ms"] == 62.5,
+                      "timings report completion tokens and decode duration");
+    failures += check(timings["predicted_per_token_ms"] == 12.5 &&
+                          timings["predicted_per_second"] == 80.0,
+                      "decode rates divide by predicted_n - 1 steps (first token from prefill)");
+    failures += check(timings["draft_n"] == 9 && timings["draft_n_accepted"] == 5,
+                      "speculative draft counters appear when drafts were produced");
 
     outcome.text.clear();
     outcome.tool_calls.push_back(
@@ -615,18 +649,83 @@ int test_aggregate_response() {
     return failures;
 }
 
+int test_timings() {
+    int failures = 0;
+    auto check_timings = [&](const GenerationOutcome& outcome, const Json& expected,
+                             bool expect_drafts) {
+        const Json response = Json::parse(make_chat_completion_response(identity(), outcome));
+        const Json& timings = response["timings"];
+        for (const auto& [key, value] : expected.items()) {
+            failures += check(timings.contains(key) && timings[key] == value,
+                              std::string("timings field ") + key + " is exact");
+        }
+        failures += check(timings.contains("draft_n") == expect_drafts &&
+                              timings.contains("draft_n_accepted") == expect_drafts,
+                          "draft fields appear exactly when drafts were produced");
+    };
+
+    auto no_spec = [](GenerationOutcome& outcome) {
+        outcome.metrics.speculative_draft_tokens    = 0;
+        outcome.metrics.speculative_accepted_tokens = 0;
+    };
+
+    GenerationOutcome no_drafts = sample_outcome();
+    no_drafts.metrics.speculative_draft_tokens    = 0;
+    no_drafts.metrics.speculative_accepted_tokens = 0;
+    check_timings(no_drafts, Json::object(), false);
+
+    GenerationOutcome no_generation = sample_outcome();
+    no_generation.completion_tokens = 0;
+    no_generation.metrics.decode_seconds = 0.0;
+    no_spec(no_generation);
+    check_timings(no_generation,
+                  Json{{"predicted_n", 0},
+                       {"predicted_ms", 0.0},
+                       {"predicted_per_token_ms", 0.0},
+                       {"predicted_per_second", 0.0}},
+                  false);
+
+    GenerationOutcome single_token = sample_outcome();
+    single_token.completion_tokens = 1;
+    single_token.metrics.decode_seconds = 0.0;
+    no_spec(single_token);
+    check_timings(single_token,
+                  Json{{"predicted_per_token_ms", 0.0}, {"predicted_per_second", 0.0}}, false);
+
+    GenerationOutcome fully_cached = sample_outcome();
+    fully_cached.metrics.prefix_cache_hit_tokens = 20;
+    no_spec(fully_cached);
+    check_timings(fully_cached,
+                  Json{{"cache_n", 20},
+                       {"prompt_n", 0},
+                       {"prompt_per_token_ms", 0.0},
+                       {"prompt_per_second", 0.0}},
+                  false);
+
+    GenerationOutcome empty_prompt = sample_outcome();
+    empty_prompt.prompt_tokens     = 0;
+    empty_prompt.metrics.prefix_cache_hit_tokens = 0;
+    no_spec(empty_prompt);
+    check_timings(empty_prompt, Json{{"cache_n", 0}, {"prompt_n", 0}}, false);
+    return failures;
+}
+
 int test_stream_response() {
     int failures = 0;
-    OpenAIChatStream stream(identity(), true);
+    OpenAIChatStream stream(identity(), true, false);
     Json role = parse_sse(stream.start());
     failures += check(role["choices"][0]["delta"]["role"] == "assistant" &&
                           role["choices"][0]["logprobs"].is_null() && role["usage"].is_null(),
                       "stream starts with role, nullable logprobs, and null usage");
-    Json reasoning = parse_sse(stream.reasoning_delta("thought"));
-    Json content   = parse_sse(stream.content_delta("ans"));
+    failures += check(!role.contains("timings"),
+                      "role chunk precedes admission and carries no timings");
+    Json reasoning = parse_sse(stream.reasoning_delta("thought", 1));
+    Json content   = parse_sse(stream.content_delta("ans", 2));
     failures += check(reasoning["choices"][0]["delta"]["reasoning_content"] == "thought" &&
                           content["choices"][0]["delta"]["content"] == "ans",
                       "stream separates reasoning and content deltas");
+    failures += check(!reasoning.contains("timings") && !content.contains("timings"),
+                      "intermediate chunks carry no timings without timings_per_token");
 
     GenerationOutcome outcome             = sample_outcome();
     const std::vector<std::string> events = stream.finish(outcome);
@@ -634,6 +733,9 @@ int test_stream_response() {
         check(events.size() == 4, "finish emits buffered suffix, terminal, usage, and done");
     failures += check(parse_sse(events[0])["choices"][0]["delta"]["content"] == "wer",
                       "terminal content suffix is emitted exactly once");
+    failures += check(!parse_sse(events[0]).contains("timings") &&
+                          !parse_sse(events[1]).contains("timings"),
+                      "only the terminal data chunk carries timings without timings_per_token");
     failures += check(parse_sse(events[1])["choices"][0]["finish_reason"] == "stop",
                       "stream terminal finish reason emitted");
     const Json usage = parse_sse(events[2]);
@@ -641,15 +743,20 @@ int test_stream_response() {
                           usage["usage"]["prompt_tokens_details"]["cached_tokens"] == 12 &&
                           usage["usage"]["completion_tokens_details"]["reasoning_tokens"] == 3,
                       "dedicated stream usage carries detailed token accounting");
+    failures += check(usage["timings"]["predicted_n"] == 6 &&
+                          usage["timings"]["predicted_ms"] == 62.5 &&
+                          usage["timings"]["cache_n"] == 12 &&
+                          usage["timings"]["prompt_n"] == 8,
+                      "terminal usage chunk carries the exact completion timings");
     failures += check(events.back() == "data: [DONE]\n\n", "stream ends with DONE sentinel");
 
-    OpenAIChatStream mismatch(identity(), false);
+    OpenAIChatStream mismatch(identity(), false, false);
     (void)mismatch.start();
-    (void)mismatch.content_delta("different");
+    (void)mismatch.content_delta("different", 1);
     failures += check(throws_logic([&] { (void)mismatch.finish(outcome); }),
                       "stream encoder rejects terminal/content divergence");
 
-    OpenAIChatStream tool_stream(identity(), false);
+    OpenAIChatStream tool_stream(identity(), false, false);
     (void)tool_stream.start();
     GenerationOutcome tool_outcome;
     tool_outcome.tool_calls.push_back(
@@ -662,6 +769,47 @@ int test_stream_response() {
             "call_") &&
             parse_sse(tool_events[1])["choices"][0]["finish_reason"] == "tool_calls",
         "stream encoder owns stable OpenAI tool-call shape");
+    failures += check(!tool_delta.contains("timings") &&
+                          parse_sse(tool_events[1])["timings"]["predicted_n"] == 0,
+                      "tool-call finish chunk is the terminal timings carrier without usage");
+    return failures;
+}
+
+int test_timings_per_token_stream() {
+    int failures = 0;
+    OpenAIChatStream stream(identity(), false, true);
+    const Json role = parse_sse(stream.start());
+    failures += check(!role.contains("timings"), "role chunk carries no timings even in live mode");
+    stream.note_start(ninfer::GenerationStart{
+        .prompt             = ninfer::PromptSummary{.prompt_tokens = 20, .has_media = false},
+        .reused_prompt_tokens = 12,
+    });
+
+    const Json first = parse_sse(stream.reasoning_delta("thought", 2));
+    const Json& live = first["timings"];
+    failures += check(live["cache_n"] == 12 && live["prompt_n"] == 8 && live["predicted_n"] == 2,
+                      "live timings expose exact prompt split and cumulative committed tokens");
+    failures += check(live["prompt_ms"].is_number() && live["prompt_ms"] >= 0.0 &&
+                          live["predicted_ms"].is_number() && live["predicted_ms"] >= 0.0 &&
+                          live["prompt_per_second"].is_number() &&
+                          live["predicted_per_second"].is_number(),
+                      "live timings report nonnegative finite durations and rates");
+    failures += check(!live.contains("draft_n"), "live timings omit draft fields");
+
+    const Json second = parse_sse(stream.content_delta("ans", 3));
+    failures += check(second["timings"]["predicted_n"] == 5,
+                      "live predicted_n accumulates committed tokens across channels");
+
+    GenerationOutcome outcome = sample_outcome();
+    const std::vector<std::string> events = stream.finish(outcome);
+    const Json suffix = parse_sse(events[0]);
+    failures += check(suffix["timings"]["predicted_n"] == 6 &&
+                          suffix["timings"]["predicted_ms"] == 62.5,
+                      "terminal chunks switch from live to exact Engine timings");
+    const Json terminal = parse_sse(events[1]);
+    const Json aggregate = Json::parse(make_chat_completion_response(identity(), outcome));
+    failures += check(terminal["timings"] == aggregate["timings"],
+                      "terminal chunk timings equal the aggregate response timings");
     return failures;
 }
 
@@ -693,7 +841,9 @@ int main() {
     failures += test_reasoning_and_extensions();
     failures += test_stops_and_ranges();
     failures += test_aggregate_response();
+    failures += test_timings();
     failures += test_stream_response();
+    failures += test_timings_per_token_stream();
     failures += test_common_objects();
     if (failures == 0) { std::cout << "OpenAI Chat protocol tests passed\n"; }
     return failures == 0 ? 0 : 1;
