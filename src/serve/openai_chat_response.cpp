@@ -72,6 +72,16 @@ Json usage_json(const CompletionUsage& usage) {
                 {"total_tokens", usage.prompt_tokens + usage.completion_tokens}};
 }
 
+// llama.cpp-compatible prompt processing progress: total admitted prompt tokens, tokens reused
+// from the prefix cache, the prompt position reached (cached + computed so far), and wall
+// milliseconds since the request was admitted.
+Json prompt_progress_json(const ninfer::PromptProgress& progress) {
+    return Json{{"total", progress.total_tokens},
+                {"cache", progress.cached_tokens},
+                {"processed", progress.processed_tokens},
+                {"time_ms", progress.elapsed_ms}};
+}
+
 CompletionUsage usage_from(const GenerationOutcome& outcome) {
     return CompletionUsage{
         .prompt_tokens     = outcome.prompt_tokens,
@@ -238,14 +248,30 @@ std::string make_chat_completion_response(const OpenAIChatResponseIdentity& iden
 }
 
 OpenAIChatStream::OpenAIChatStream(OpenAIChatResponseIdentity identity, bool include_usage,
-                                   bool timings_per_token)
+                                   bool timings_per_token, bool return_progress)
     : identity_(std::move(identity)),
-      include_usage_(include_usage), timings_per_token_(timings_per_token) {}
+      include_usage_(include_usage),
+      timings_per_token_(timings_per_token), return_progress_(return_progress) {}
 
 std::string OpenAIChatStream::start() {
     if (started_ || finished_) { throw std::logic_error("OpenAI Chat stream already started"); }
     started_ = true;
     return chunk(identity_, Json{{"role", "assistant"}, {"content", ""}}, nullptr, include_usage_);
+}
+
+// Progress updates carry no output delta; like the terminal usage chunk, they use an empty delta
+// object and keep the choice open (null finish_reason). The Engine publishes them before the
+// first output delta, so the chunk always keeps the stream in its pre-content state.
+std::string OpenAIChatStream::prompt_progress(const ninfer::PromptProgress& progress) {
+    if (!started_ || finished_) {
+        throw std::logic_error("invalid OpenAI Chat prompt progress state");
+    }
+    if (!return_progress_) { throw std::logic_error("prompt progress was not requested"); }
+    Json payload       = base_payload(identity_, "chat.completion.chunk");
+    payload["choices"] = Json::array({stream_choice(Json::object(), nullptr)});
+    if (include_usage_) { payload["usage"] = nullptr; }
+    payload["prompt_progress"] = prompt_progress_json(progress);
+    return event(std::move(payload));
 }
 
 void OpenAIChatStream::note_start(const ninfer::GenerationStart& start) {

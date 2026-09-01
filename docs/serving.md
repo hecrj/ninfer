@@ -122,6 +122,7 @@ The endpoint supports:
 - `n:1`, text-only `modalities`, and `response_format: {"type":"text"}`;
 - non-streaming responses and server-sent event streams;
 - `stream_options.include_usage`;
+- `return_progress` prompt processing progress events in stream mode;
 - non-strict function tools with `tool_choice` `auto`, `none`, or `allowed_tools` in `auto` mode,
   parallel calls enabled, assistant tool-call history, tool-result messages, and legacy
   function-call history;
@@ -222,6 +223,21 @@ finish-reason chunk and `[DONE]`. When `stream_options.include_usage` is true, a
 and reasoning-token details; choices carry `logprobs: null` when log probabilities were not
 requested, and aggregate assistant messages carry `refusal: null` because refusal output is not
 supported.
+
+With `return_progress` true, the stream also carries llama.cpp-compatible prompt progress chunks
+while the prompt prefills. Each chunk keeps the choice open with an empty delta and a null
+`finish_reason`, and adds a top-level `prompt_progress` object:
+
+- `total` — the prompt tokens admitted for the request;
+- `cache` — prompt tokens reused from the prefix cache;
+- `processed` — the prompt position reached so far (cached plus computed), starting at `cache`
+  and reaching `total` when prefill completes;
+- `time_ms` — wall milliseconds since the request was admitted.
+
+The first event is published at admission and reports the cached prefix; one more event follows
+each completed prefill unit. A consumer slower than prefill observes coalesced updates, but the
+event covering the whole prompt always precedes the first reasoning or content delta. Non-streaming
+responses already report exact prompt timings and ignore the flag.
 
 ### Multimodal request
 

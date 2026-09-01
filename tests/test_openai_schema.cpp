@@ -111,7 +111,7 @@ int test_request_envelope_and_sampling() {
     const OpenAIChatRequest defaults = parse(base_request());
     failures +=
         check(!defaults.stream && !defaults.include_usage && !defaults.output_tokens_explicit &&
-                  !defaults.timings_per_token &&
+                  !defaults.timings_per_token && !defaults.return_progress &&
                   defaults.generation.max_tokens == limits().default_max_tokens,
               "protocol defaults remain outside GenerationRequest");
 
@@ -122,6 +122,12 @@ int test_request_envelope_and_sampling() {
     body["timings_per_token"]     = nullptr;
     failures += check(!parse(body).timings_per_token, "timings_per_token=null uses default");
 
+    body                    = base_request();
+    body["return_progress"] = true;
+    failures += check(parse(body).return_progress, "return_progress=true parsed");
+    body["return_progress"] = nullptr;
+    failures += check(!parse(body).return_progress, "return_progress=null uses default");
+
     Json malformed              = base_request();
     malformed["stream_options"] = true;
     failures += check(api_error([&] { (void)parse(malformed); }).param == "stream_options",
@@ -131,6 +137,10 @@ int test_request_envelope_and_sampling() {
     failures +=
         check(api_error([&] { (void)parse(malformed); }).param == "timings_per_token",
               "non-boolean timings_per_token rejected");
+    malformed                  = base_request();
+    malformed["return_progress"] = "yes";
+    failures += check(api_error([&] { (void)parse(malformed); }).param == "return_progress",
+                      "non-boolean return_progress rejected");
     return failures;
 }
 
@@ -813,6 +823,64 @@ int test_timings_per_token_stream() {
     return failures;
 }
 
+int test_prompt_progress_stream() {
+    int failures = 0;
+    OpenAIChatStream stream(identity(), true, false, true);
+    const Json role = parse_sse(stream.start());
+    failures += check(!role.contains("prompt_progress"),
+                      "role chunk precedes admission and carries no prompt progress");
+
+    const ninfer::PromptProgress admitted{
+        .total_tokens = 32, .cached_tokens = 12, .processed_tokens = 12, .elapsed_ms = 0,
+    };
+    const Json initial = parse_sse(stream.prompt_progress(admitted));
+    failures += check(initial["object"] == "chat.completion.chunk" &&
+                          initial["choices"][0]["index"] == 0 &&
+                          initial["choices"][0]["logprobs"].is_null() &&
+                          initial["choices"][0]["finish_reason"].is_null() &&
+                          initial["choices"][0]["delta"].is_object() &&
+                          initial["choices"][0]["delta"].empty(),
+                      "progress chunk keeps the choice open with an empty delta");
+    failures += check(initial["usage"].is_null(), "progress chunk mirrors include_usage null usage");
+    const Json initial_progress = initial["prompt_progress"];
+    failures += check(initial_progress["total"] == 32 && initial_progress["cache"] == 12 &&
+                          initial_progress["processed"] == 12 && initial_progress["time_ms"] == 0,
+                      "admission progress reports the cached prefix at time zero");
+
+    const ninfer::PromptProgress partial{
+        .total_tokens = 32, .cached_tokens = 12, .processed_tokens = 20, .elapsed_ms = 57,
+    };
+    const Json mid = parse_sse(stream.prompt_progress(partial));
+    failures += check(mid["prompt_progress"]["processed"] == 20 &&
+                          mid["prompt_progress"]["time_ms"] == 57,
+                      "intermediate progress reports the cumulative prompt position");
+
+    const ninfer::PromptProgress complete{
+        .total_tokens = 32, .cached_tokens = 12, .processed_tokens = 32, .elapsed_ms = 104,
+    };
+    const Json done = parse_sse(stream.prompt_progress(complete));
+    failures += check(done["prompt_progress"]["processed"] == done["prompt_progress"]["total"],
+                      "terminal progress reaches the full prompt before the first delta");
+
+    GenerationOutcome outcome             = sample_outcome();
+    const std::vector<std::string> events = stream.finish(outcome);
+    failures += check(throws_logic(
+                        [&] { (void)stream.prompt_progress(admitted); }),
+                      "progress after finish is rejected");
+
+    OpenAIChatStream disabled(identity(), false, false, false);
+    (void)disabled.start();
+    failures +=
+        check(throws_logic([&] { (void)disabled.prompt_progress(admitted); }),
+              "progress is rejected when return_progress was not requested");
+
+    OpenAIChatStream before_start(identity(), false, false, true);
+    failures +=
+        check(throws_logic([&] { (void)before_start.prompt_progress(admitted); }),
+              "progress before the role chunk is rejected");
+    return failures;
+}
+
 int test_common_objects() {
     int failures      = 0;
     const ninfer::ModelMetadata metadata{
@@ -863,6 +931,7 @@ int main() {
     failures += test_timings();
     failures += test_stream_response();
     failures += test_timings_per_token_stream();
+    failures += test_prompt_progress_stream();
     failures += test_common_objects();
     if (failures == 0) { std::cout << "OpenAI Chat protocol tests passed\n"; }
     return failures == 0 ? 0 : 1;

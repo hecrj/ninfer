@@ -207,6 +207,10 @@ public:
         if (sink_->on_start) { sink_->on_start(start); }
     }
 
+    void progress(ninfer::PromptProgress progress) override {
+        if (sink_->on_progress) { sink_->on_progress(progress); }
+    }
+
     void publish(ninfer::OutputDelta delta) override {
         if (delta.text.empty()) { return; }
         if (delta.channel == ninfer::OutputChannel::Reasoning) {

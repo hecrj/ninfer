@@ -577,19 +577,23 @@ private:
 
         std::exception_ptr caller_error;
         std::optional<GenerationStart> start;
+        std::optional<PromptProgress> prompt_progress;
         std::vector<OutputDelta> events;
         for (;;) {
             start.reset();
+            prompt_progress.reset();
             events.clear();
             bool done = false;
             {
                 std::unique_lock lock(request->mutex);
                 request->cv.wait_for(lock, std::chrono::milliseconds(10), [&] {
                     return request->response_done || request->stream_start.has_value() ||
-                           !request->events.empty();
+                           request->stream_progress.has_value() || !request->events.empty();
                 });
                 start = std::move(request->stream_start);
                 request->stream_start.reset();
+                prompt_progress = std::move(request->stream_progress);
+                request->stream_progress.reset();
                 events.swap(request->events);
                 done = request->response_done;
             }
@@ -597,6 +601,7 @@ private:
             if (caller_error == nullptr && sink != nullptr) {
                 try {
                     if (start) { sink->start(std::move(*start)); }
+                    if (prompt_progress) { sink->progress(std::move(*prompt_progress)); }
                     for (OutputDelta& event : events) { sink->publish(std::move(event)); }
                 } catch (...) {
                     caller_error = std::current_exception();
@@ -677,12 +682,47 @@ private:
         if (streaming) { request->cv.notify_one(); }
     }
 
+    // Builds the cumulative prompt progress observed at `now`. `computed_tokens` counts the
+    // prompt tokens computed after admission; the reused prefix is part of `processed_tokens`, so
+    // the value reaches `total_tokens` exactly when prefill completes.
+    [[nodiscard]] PromptProgress
+    make_stream_prompt_progress(const std::shared_ptr<Request>& request,
+                                const BeginSummary& begin,
+                                std::uint32_t computed_tokens, Clock::time_point now) {
+        const std::uint32_t cached = begin.reused_prompt_tokens;
+        return PromptProgress{
+            .total_tokens     = begin.prompt_tokens,
+            .cached_tokens    = cached,
+            .processed_tokens = cached + computed_tokens,
+            .elapsed_ms       = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     now - request->prompt_progress_started)
+                                    .count(),
+        };
+    }
+
+    // Publishes one cumulative prompt progress event. The single pending slot coalesces events a
+    // slow consumer has not drained; the worker is the only writer and the publish happens before
+    // the completing prefill unit commits its first output batch, so the final event always
+    // precedes the first streamed delta.
+    void publish_stream_prompt_progress(const std::shared_ptr<Request>& request) {
+        const Clock::time_point now = Clock::now();
+        {
+            std::lock_guard lock(request->mutex);
+            if (request->response_done) { return; }
+            request->stream_progress =
+                make_stream_prompt_progress(request, *request->admitted_begin,
+                                            request->prompt_computed_tokens, now);
+        }
+        request->cv.notify_one();
+    }
+
     void publish_generation_start(const std::shared_ptr<Request>& request, BeginSummary begin) {
         if (request->admitted_begin) {
             throw std::logic_error("request admission published generation start twice");
         }
         request->admitted_begin = begin;
         if (request->consumer_mode != OutputConsumerMode::Streaming) { return; }
+        request->prompt_progress_started = Clock::now();
         {
             std::lock_guard lock(request->mutex);
             if (request->stream_start || request->response_done) {
@@ -692,6 +732,8 @@ private:
                 .prompt               = request->prompt_summary,
                 .reused_prompt_tokens = begin.reused_prompt_tokens,
             };
+            request->stream_progress =
+                make_stream_prompt_progress(request, begin, 0, request->prompt_progress_started);
         }
         request->cv.notify_one();
     }
@@ -1246,6 +1288,10 @@ private:
         ++request->host_timing.prefill_units;
         cumulative_stats_.computed_prefill_tokens += progress.processed_prompt_tokens;
         Scheduling::consume_service_work(*request, 1);
+        if (request->consumer_mode == OutputConsumerMode::Streaming) {
+            request->prompt_computed_tokens += progress.processed_prompt_tokens;
+            publish_stream_prompt_progress(request);
+        }
         if (progress.capture) {
             if (progress.complete || progress.pending) {
                 throw std::logic_error("prefill capture offer overlaps prompt completion");

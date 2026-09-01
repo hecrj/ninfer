@@ -78,14 +78,17 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
         return;
     }
 
+    const bool return_progress = request.return_progress;
     auto stream  = std::make_shared<HttpGenerationStream>(std::move(prepared));
     auto encoder = std::make_shared<OpenAIChatStream>(identity, request.include_usage,
-                                                      request.timings_per_token);
+                                                      request.timings_per_token,
+                                                      request.return_progress);
 
     prepare_sse_response(res);
     res.set_chunked_content_provider(
         "text/event-stream",
-        [this, stream, encoder, log_context](std::size_t, httplib::DataSink& sink) -> bool {
+        [this, stream, encoder, log_context,
+         return_progress](std::size_t, httplib::DataSink& sink) -> bool {
             if (stream->started) {
                 sink.done();
                 return true;
@@ -98,6 +101,11 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                 output.on_start = [&](const ninfer::GenerationStart& start) {
                     encoder->note_start(start);
                 };
+                if (return_progress) {
+                    output.on_progress = [&](const ninfer::PromptProgress& progress) {
+                        transport.write(encoder->prompt_progress(progress));
+                    };
+                }
                 output.on_content = [&](const std::string& text, std::uint32_t committed_tokens) {
                     transport.write(encoder->content_delta(text, committed_tokens));
                 };

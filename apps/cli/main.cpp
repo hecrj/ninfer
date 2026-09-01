@@ -121,6 +121,10 @@ class StreamingSink final : public ninfer::OutputSink {
 public:
     void start(ninfer::GenerationStart) override {}
 
+    // Prompt progress is a streaming diagnostic; the CLI reports prompt timing in its terminal
+    // summary instead.
+    void progress(ninfer::PromptProgress) override {}
+
     void publish(ninfer::OutputDelta delta) override {
         std::ostream& output =
             delta.channel == ninfer::OutputChannel::Reasoning ? std::cerr : std::cout;

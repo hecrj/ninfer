@@ -179,6 +179,10 @@ struct RequestRecord {
     std::uint64_t remaining_service_work = 0;
     std::uint64_t backfill_epoch         = 0;
     BackfillClass backfill_class         = BackfillClass::None;
+    // Worker-owned prompt progress accounting for streaming requests. The token count accumulates
+    // across prefill units; the clock starts at admission. Both are consumed only by the worker.
+    std::uint32_t prompt_computed_tokens = 0;
+    Clock::time_point prompt_progress_started{};
     GenerationTimings generation_timings;
     RequestHostTiming host_timing;
     SpeculativeStats speculative_stats;
@@ -187,6 +191,7 @@ struct RequestRecord {
     std::mutex mutex;
     std::condition_variable cv;
     std::optional<GenerationStart> stream_start;
+    std::optional<PromptProgress> stream_progress;
     std::vector<OutputDelta> events;
     GenerationResult result;
     std::exception_ptr error;

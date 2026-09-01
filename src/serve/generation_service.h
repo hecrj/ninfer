@@ -59,6 +59,11 @@ struct StreamSink {
     // Delta callbacks carry the round's committed output-token count (see OutputDelta
     // committed_tokens) so streaming adapters can accumulate live token statistics.
     std::function<void(const ninfer::GenerationStart& start)> on_start;
+    // Cumulative prompt processing progress, published at admission and after each completed
+    // prefill unit, always before the first output delta. The Engine coalesces events a slow
+    // consumer has not drained, so the callback may observe fewer updates than prefill units;
+    // the terminal update covering the whole prompt is always delivered.
+    std::function<void(const ninfer::PromptProgress& progress)> on_progress;
     std::function<void(const std::string& delta_text, std::uint32_t committed_tokens)> on_content;
     std::function<void(const std::string& delta_text, std::uint32_t committed_tokens)>
         on_reasoning;

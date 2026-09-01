@@ -491,11 +491,25 @@ struct GenerationStart {
     std::uint32_t reused_prompt_tokens = 0;
 };
 
+// Cumulative prompt processing progress for one streaming request. The Engine publishes it once
+// at admission (processed_tokens equals cached_tokens) and after each completed prefill unit, so
+// the final event reports the whole prompt as processed before the first OutputDelta. Events the
+// consumer has not drained are coalesced: a slow consumer observes fewer updates, but the update
+// covering the complete prompt is always delivered before the first output delta.
+struct PromptProgress {
+    std::uint32_t total_tokens     = 0; // Prompt tokens admitted for the request.
+    std::uint32_t cached_tokens    = 0; // Prompt tokens reused from the prefix cache.
+    std::uint32_t processed_tokens = 0; // Prompt position reached: cached + computed so far.
+    std::int64_t elapsed_ms        = 0; // Wall milliseconds since the request was admitted.
+};
+
 class OutputSink {
 public:
     virtual ~OutputSink()                     = default;
     virtual void start(GenerationStart start) = 0;
-    virtual void publish(OutputDelta delta)   = 0;
+    // Streaming requests only; published after start and before the first OutputDelta.
+    virtual void progress(PromptProgress progress) = 0;
+    virtual void publish(OutputDelta delta)        = 0;
 };
 
 enum class OutputConsumerMode : std::uint8_t {
