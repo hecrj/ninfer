@@ -236,8 +236,12 @@ while the prompt prefills. Each chunk keeps the choice open with an empty delta 
 
 The first event is published at admission and reports the cached prefix; one more event follows
 each completed prefill unit. A consumer slower than prefill observes coalesced updates, but the
-event covering the whole prompt always precedes the first reasoning or content delta. Non-streaming
-responses already report exact prompt timings and ignore the flag.
+event covering the whole prompt always precedes the first reasoning or content delta. With
+`timings_per_token` true, every progress chunk also carries a top-level `timings` object like the
+output chunks, live while the prompt prefills: the prompt fields track the position reached beyond
+the cached prefix, and the decode-side fields stay zero until the first output delta. Without
+`timings_per_token`, progress chunks carry no timings. Non-streaming responses already report exact
+prompt timings and ignore the flag.
 
 ### Multimodal request
 

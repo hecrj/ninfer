@@ -55,7 +55,8 @@ public:
     // before any output delta.
     void note_start(const ninfer::GenerationStart& start);
     // llama.cpp-compatible prompt progress chunk. The Engine publishes progress at admission and
-    // after each completed prefill unit, always before the first output delta.
+    // after each completed prefill unit, always before the first output delta. With
+    // timings_per_token the chunk also carries live prompt-side timings, like the output chunks.
     std::string prompt_progress(const ninfer::PromptProgress& progress);
     std::string reasoning_delta(const std::string& text, std::uint32_t committed_tokens);
     std::string content_delta(const std::string& text, std::uint32_t committed_tokens);
@@ -77,6 +78,10 @@ private:
     };
 
     [[nodiscard]] nlohmann::json live_timings_json() const;
+    // Live timings for prompt progress chunks. The prompt side tracks the progress event while
+    // the decode side stays zero before the first output delta.
+    [[nodiscard]] nlohmann::json
+    progress_timings_json(const ninfer::PromptProgress& progress) const;
     void note_live_delta(std::uint32_t committed_tokens);
 
     OpenAIChatResponseIdentity identity_;

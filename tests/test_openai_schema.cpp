@@ -861,12 +861,51 @@ int test_prompt_progress_stream() {
     const Json done = parse_sse(stream.prompt_progress(complete));
     failures += check(done["prompt_progress"]["processed"] == done["prompt_progress"]["total"],
                       "terminal progress reaches the full prompt before the first delta");
+    failures += check(!initial.contains("timings") && !mid.contains("timings") &&
+                          !done.contains("timings"),
+                      "progress chunks carry no timings without timings_per_token");
 
     GenerationOutcome outcome             = sample_outcome();
     const std::vector<std::string> events = stream.finish(outcome);
     failures += check(throws_logic(
                         [&] { (void)stream.prompt_progress(admitted); }),
                       "progress after finish is rejected");
+
+    OpenAIChatStream live(identity(), false, true, true);
+    (void)live.start();
+    live.note_start(ninfer::GenerationStart{
+        .prompt               = ninfer::PromptSummary{.prompt_tokens = 32, .has_media = false},
+        .reused_prompt_tokens = 12,
+    });
+    const Json live_initial = parse_sse(live.prompt_progress(admitted));
+    const Json& live_timings = live_initial["timings"];
+    failures += check(live_timings["cache_n"] == 12 && live_timings["prompt_n"] == 0 &&
+                          live_timings["prompt_ms"] == 0.0 && live_timings["predicted_n"] == 0,
+                      "admission progress timings report the cached prefix with no computed work");
+    failures += check(live_timings["prompt_per_token_ms"] == 0.0 &&
+                          live_timings["prompt_per_second"] == 0.0 &&
+                          live_timings["predicted_ms"] == 0.0 &&
+                          live_timings["predicted_per_token_ms"] == 0.0 &&
+                          live_timings["predicted_per_second"] == 0.0 &&
+                          !live_timings.contains("draft_n"),
+                      "admission progress timings zero every rate while the prompt prefills");
+
+    const Json live_mid = parse_sse(live.prompt_progress(partial));
+    const Json& mid_timings = live_mid["timings"];
+    failures += check(mid_timings["prompt_n"] == 8 && mid_timings["prompt_ms"] == 57.0 &&
+                          mid_timings["predicted_n"] == 0,
+                      "live progress timings track computed prompt tokens and elapsed milliseconds");
+    failures += check(mid_timings["prompt_per_token_ms"] == 57.0 / 8.0 &&
+                          mid_timings["prompt_per_second"] == 8.0e3 / 57.0,
+                      "live progress timings derive prompt rates from the observed position");
+
+    const Json live_done = parse_sse(live.prompt_progress(complete));
+    const Json& done_timings = live_done["timings"];
+    failures += check(done_timings["prompt_n"] == 20 && done_timings["prompt_ms"] == 104.0 &&
+                          done_timings["prompt_per_token_ms"] == 104.0 / 20.0 &&
+                          done_timings["prompt_per_second"] == 20.0e3 / 104.0 &&
+                          done_timings["predicted_n"] == 0,
+                      "terminal progress timings reach the full computed prompt with no decode yet");
 
     OpenAIChatStream disabled(identity(), false, false, false);
     (void)disabled.start();

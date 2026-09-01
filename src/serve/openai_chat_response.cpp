@@ -259,6 +259,18 @@ std::string OpenAIChatStream::start() {
     return chunk(identity_, Json{{"role", "assistant"}, {"content", ""}}, nullptr, include_usage_);
 }
 
+// llama.cpp-compatible live prompt timings for progress chunks. With timings_per_token, progress
+// chunks carry the same top-level timings object as output chunks; while the prompt still
+// prefills, only the prompt side has advanced, so the computed-token count is the progress
+// position beyond the cached prefix, prompt_ms tracks the event's elapsed milliseconds, and
+// every decode-side field stays zero until the first output delta.
+nlohmann::json OpenAIChatStream::progress_timings_json(const ninfer::PromptProgress& progress) const {
+    if (!timings_per_token_ || !live_.started) { return nullptr; }
+    return timings_json(make_completion_timings(
+        progress.processed_tokens, progress.cached_tokens, 0,
+        static_cast<double>(progress.elapsed_ms), 0.0, 0, 0));
+}
+
 // Progress updates carry no output delta; like the terminal usage chunk, they use an empty delta
 // object and keep the choice open (null finish_reason). The Engine publishes them before the
 // first output delta, so the chunk always keeps the stream in its pre-content state.
@@ -270,6 +282,8 @@ std::string OpenAIChatStream::prompt_progress(const ninfer::PromptProgress& prog
     Json payload       = base_payload(identity_, "chat.completion.chunk");
     payload["choices"] = Json::array({stream_choice(Json::object(), nullptr)});
     if (include_usage_) { payload["usage"] = nullptr; }
+    const Json timings = progress_timings_json(progress);
+    if (!timings.is_null()) { payload["timings"] = std::move(timings); }
     payload["prompt_progress"] = prompt_progress_json(progress);
     return event(std::move(payload));
 }
