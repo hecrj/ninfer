@@ -43,6 +43,39 @@ void validate_options(const EngineOptions& options) {
     }
 }
 
+// Static /v1/models metadata: the model identity and the dimension facts come from the loaded
+// model definition; the parameters, weight bytes, and weights profile are pure functions of the
+// artifact's tensor inventory.
+[[nodiscard]] ModelMetadata model_metadata(const artifact::Reader& reader,
+                                           const LoadSummary& load, std::uint64_t vocab_size,
+                                           std::uint64_t embedding_size,
+                                           std::uint64_t native_context) {
+    ModelMetadata metadata;
+    metadata.model_id       = load.model_name;
+    metadata.vocab_size     = vocab_size;
+    metadata.embedding_size = embedding_size;
+    metadata.native_context = native_context;
+    std::uint64_t parameters   = 0;
+    std::uint64_t weight_bytes = 0;
+    std::set<std::string> formats;
+    for (const auto& object : reader.directory().objects) {
+        const auto* tensor = std::get_if<artifact::TensorObject>(&object);
+        if (tensor == nullptr) { continue; } // Non-weight resources (tokenizer, templates).
+        std::uint64_t elements = 1;
+        for (const auto dimension : tensor->shape) { elements *= dimension; }
+        parameters   += elements;
+        weight_bytes += tensor->bytes;
+        formats.emplace(tensor->format);
+    }
+    metadata.parameters   = parameters;
+    metadata.weight_bytes = weight_bytes;
+    for (const auto& format : formats) {
+        if (!metadata.weights_id.empty()) { metadata.weights_id += "+"; }
+        metadata.weights_id += format;
+    }
+    return metadata;
+}
+
 } // namespace
 
 EngineOptions normalize_engine_options(EngineOptions options) {
@@ -91,30 +124,49 @@ ConstructedModel construct_model(EngineOptions& options) {
         if (options.deployment && options.deployment->ranks.size() > 1) {
             auto built = detail::build_distributed_model<models::glm5next::ParallelStartup>(
                 reader, options, start);
-            return {std::move(built.instance), std::move(built.load),
+            const auto& text = built.instance->definition->config().text;
+            const ModelMetadata metadata =
+                model_metadata(reader, built.load, text.vocabulary, text.hidden, text.max_context);
+            return {std::move(built.instance), std::move(built.load), std::move(metadata),
                     std::move(built.context_cost)};
         }
 #endif
         auto built =
             detail::build_prepared_local_model<models::glm5next::Startup>(reader, options, start);
-        return {std::move(built.instance), std::move(built.load), std::move(built.context_cost)};
+        const auto& text = built.instance->definition->config().text;
+        const ModelMetadata metadata =
+            model_metadata(reader, built.load, text.vocabulary, text.hidden, text.max_context);
+        return {std::move(built.instance), std::move(built.load), std::move(metadata),
+                std::move(built.context_cost)};
     }
     case models::Architecture::Qwen4Exp: {
 #if NINFER_ENABLE_DISTRIBUTED
         if (options.deployment && options.deployment->ranks.size() > 1) {
             auto built = detail::build_distributed_model<models::qwen4_exp::ParallelStartup>(
                 reader, options, start);
-            return {std::move(built.instance), std::move(built.load),
+            const auto& text = built.instance->definition->config().text;
+            const ModelMetadata metadata =
+                model_metadata(reader, built.load, text.vocabulary, text.hidden, text.max_context);
+            return {std::move(built.instance), std::move(built.load), std::move(metadata),
                     std::move(built.context_cost)};
         }
 #endif
         auto built = detail::build_local_model<models::qwen4_exp::Startup>(reader, options, start);
-        return {std::move(built.instance), std::move(built.load), std::move(built.context_cost)};
+        const auto& text = built.instance->definition->config().text;
+        const ModelMetadata metadata =
+            model_metadata(reader, built.load, text.vocabulary, text.hidden, text.max_context);
+        return {std::move(built.instance), std::move(built.load), std::move(metadata),
+                std::move(built.context_cost)};
     }
     case models::Architecture::Qwen3_5:
     case models::Architecture::Qwen3_5Moe: {
         auto built = detail::build_local_model<models::qwen3_5::Startup>(reader, options, start);
-        return {std::move(built.instance), std::move(built.load), std::move(built.context_cost)};
+        const auto& text = built.instance->definition->config().text;
+        const ModelMetadata metadata =
+            model_metadata(reader, built.load, text.vocab_size, text.hidden_size,
+                           text.max_position_embeddings);
+        return {std::move(built.instance), std::move(built.load), std::move(metadata),
+                std::move(built.context_cost)};
     }
     }
     throw std::logic_error("architecture has no Engine construction route");

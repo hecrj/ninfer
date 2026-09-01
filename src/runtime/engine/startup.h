@@ -23,6 +23,7 @@ using ActiveModel =
 struct ConstructedModel {
     ActiveModel instance;
     LoadSummary load;
+    ModelMetadata model_metadata;
     ContextMachineCostModel context_cost;
 };
 

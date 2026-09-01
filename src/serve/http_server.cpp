@@ -485,7 +485,8 @@ void HttpServer::register_routes() {
 
 void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {
     res.set_content(
-        make_models_list(public_model_id_, unix_time_now(), options_.launch.engine.max_context),
+        make_models_list(public_model_id_, unix_time_now(), options_.launch.engine.max_context,
+                         model_metadata_),
         "application/json");
 }
 
@@ -501,7 +502,8 @@ void HttpServer::handle_model(const httplib::Request& req, httplib::Response& re
         return;
     }
     res.set_content(
-        make_model_object(public_model_id_, unix_time_now(), options_.launch.engine.max_context),
+        make_model_object(public_model_id_, unix_time_now(), options_.launch.engine.max_context,
+                          model_metadata_),
         "application/json");
 }
 
@@ -516,6 +518,7 @@ void HttpServer::attach(GenerationService& service) {
         throw std::logic_error("loaded artifact model name must not be empty");
     }
     public_model_id_ = options_.model_id_override.value_or(load.model_name);
+    model_metadata_  = service.description().model_metadata;
     service_         = &service;
     metrics_.configure(public_model_id_, service.engine_options(), service.description(),
                        service.startup_report(), service.snapshot());

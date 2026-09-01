@@ -189,6 +189,7 @@ public:
         auto constructed = runtime::construct_model(options);
         active           = std::move(constructed.instance);
         startup.load     = std::move(constructed.load);
+        description.model_metadata = std::move(constructed.model_metadata);
         std::visit(
             [&](const auto& instance) {
                 sampling_defaults = instance->frontend.sampling_defaults();
