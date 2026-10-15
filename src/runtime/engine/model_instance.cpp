@@ -1,4 +1,5 @@
 #include "runtime/engine/model_instance.h"
+#include "runtime/engine/max_context.h"
 #include "artifact/reader.h"
 #include "artifact/formats.h"
 #include "core/startup.h"
@@ -66,6 +67,40 @@ std::size_t current_free_device_bytes() {
     return free_bytes;
 }
 
+// Resolves an automatic --max-context: the largest context in [1, model position capacity]
+// whose complete startup layout (KV floor, workspace, Graph allowance) fits the device memory
+// remaining after weights. Feasibility is probed by running the exact startup sizing path
+// (planner construction plus KV capacity resolution) against a modified options copy; the probe
+// is host-side layout arithmetic and allocates nothing on the device.
+std::uint32_t resolve_auto_max_context(const models::qwen3_5::Model& model, DeviceContext& device,
+                                       const EngineOptions& options) {
+    const models::qwen3_5::execution::Parameters parameters(model);
+    const std::uint32_t high = parameters.model.config().text.max_position_embeddings;
+    if (high == 0) {
+        throw std::invalid_argument("automatic max_context requires a model position capacity");
+    }
+    const std::size_t free_bytes = current_free_device_bytes();
+    const auto feasible = [&](std::uint32_t context) {
+        EngineOptions probe = options;
+        probe.max_context = context;
+        probe.max_context_auto = false;
+        if (probe.kv_capacity_follows_max_context ||
+            probe.purpose == EnginePurpose::CausalScoring) {
+            probe.kv_capacity = KvCapacityPolicy::explicit_capacity(context);
+        }
+        try {
+            auto planner = models::qwen3_5::make_sequence_planner(parameters, device, probe);
+            (void)resolve_kv_capacity(probe.kv_capacity, planner.capacity_curve(), free_bytes);
+            return true;
+        } catch (const std::invalid_argument&) {
+            return false;
+        } catch (const std::overflow_error&) {
+            return false;
+        }
+    };
+    return largest_feasible_value(1, high, feasible);
+}
+
 } // namespace
 
 EngineOptions normalize_engine_options(EngineOptions options) {
@@ -129,6 +164,13 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     auto model =
         models::qwen3_5::materialize_model(std::move(plan), device, &options.startup_observer);
     device.synchronize();
+    if (options.max_context_auto) {
+        options.max_context = resolve_auto_max_context(*model, device, options);
+        if (options.kv_capacity_follows_max_context ||
+            options.purpose == EnginePurpose::CausalScoring) {
+            options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+        }
+    }
     StartupPhaseScope frontend(options.startup_observer, StartupPhase::FrontendInitialize);
     auto instance = std::make_unique<ModelInstance>(std::move(model), options);
     frontend.complete();

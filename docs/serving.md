@@ -919,7 +919,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--port N` | listen port | `8080` |
 | `--api-key KEY` | required bearer or `x-api-key` value | unset |
 | `--model-id ID` | override the public OpenAI model alias | artifact `metadata.name`, or architecture name |
-| `--max-context N` | logical context ceiling of each sequence | `8192` |
+| `--max-context N\|auto` | logical context ceiling of each sequence; `auto` resolves the longest ceiling whose complete runtime layout fits the remaining GPU memory (bounded by the model position capacity) | `8192` |
 | `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `8192` |
 | `--max-concurrency N` | resident execution lanes; valid range `1..8` | `1` |
 | `--max-pending-requests N` | additional requests allowed to wait for admission | `16` |
@@ -1202,6 +1202,15 @@ outside the GPU executor and do not delay formation of the next batch.
 pool used by active requests and retained prefixes. `auto` accounts for the complete enabled runtime
 and leaves 1 GiB of sizing headroom; omitting the option makes it follow `--max-context`. Capacity
 resolves once at startup.
+
+`--max-context auto` resolves the longest per-request ceiling that the complete enabled runtime
+layout can hold in the device memory remaining after weights, bounded by the model position
+capacity: the ceiling's KV floor, the phase workspace, and the CUDA Graph allowance must all fit
+before the KV pool is sized. The resolution is a monotone search over the exact startup sizing
+path, so the resolved ceiling always boots. With `--kv-capacity auto` the pool then maximizes the
+remaining budget on top of that floor; with an omitted or explicit one-context `--kv-capacity` the
+pool holds one resolved context. The resolved ceiling is reported in the startup capacity log,
+the request records, and the `max_context_tokens` metric.
 
 Before each prefill, decode or replay unit, the runtime reserves the additional pages and temporary
 storage required by that unit. It first reclaims inactive cache resources when capacity is short.

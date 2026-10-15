@@ -852,6 +852,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
         // Definitions remain per execution profile, but only one executable is instantiated for
         // each reachable node-topology class. These bounds cover the largest profile installed in
         // each class and the driver/module state materialized while qualifying all definitions.
+        // The per-class values are calibrated against the measured driver state, which startup
+        // reports as cuda_graph_measured_bytes and warns about when it exceeds the bound.
         if (impl->speculative_backend == SpeculativeBackend::None) {
             impl->graph_allowance_bytes = checked_mul(12ULL * kMiB, impl->max_concurrency,
                                                       "ordinary exact-b graph allowance");
@@ -878,14 +880,16 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
                     // Long profiles also materialize driver execution storage; that shared
-                    // cost does not shrink with the number of graph executables.
-                    return (final_visible <= 4096 ? 64ULL : 192ULL) * kMiB;
+                    // cost does not shrink with the number of graph executables. Per-class
+                    // values are ~6x the largest measured driver state for a full DFlash2
+                    // family (short and long classes, per lane); see cuda_graph_measured_bytes.
+                    return (final_visible <= 4096 ? 16ULL : 32ULL) * kMiB;
                 },
                 "DFlash graph allowance");
             // Forward retains the draft's topology classes; finish has one small executable
             // per exact B, independently of context length.
             impl->graph_allowance_bytes =
-                checked_mul(per_batch_allowance + 8ULL * kMiB, impl->max_concurrency,
+                checked_mul(per_batch_allowance + 4ULL * kMiB, impl->max_concurrency,
                             "DFlash exact-b graph allowance");
         }
     }

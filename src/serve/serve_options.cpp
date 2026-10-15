@@ -115,7 +115,8 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
-           "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
+           "[--model-id ID] [--max-context N|auto] [--kv-capacity N|auto] "
+           "[--kv-headroom-mib N] [--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--context-cost-presets FILE] "
@@ -148,7 +149,10 @@ std::string serve_usage_text(const char* argv0) {
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom\n"
+           " MiB of sizing headroom; --kv-headroom-mib overrides it in MiB (0 disables it)\n"
+           "       --max-context auto resolves the longest per-request context whose complete "
+           "runtime layout fits the remaining GPU memory, bounded by the model position "
+           "capacity; omitting --kv-capacity then sizes the pool to one resolved context\n"
            "       --no-prefix-reuse disables cross-request history; request pause/replay "
            "resources remain available\n"
            "       context defaults: device-state=max-concurrency; Host budget is resolved from "
@@ -179,6 +183,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
+    bool kv_headroom_explicit        = false;
+    std::size_t kv_headroom_bytes    = 0;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -203,11 +209,23 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 throw std::invalid_argument("--model-id must not be empty");
             }
         } else if (arg == "--max-context") {
-            options.max_context = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--max-context"), "max-context"));
+            const char* value = require_value("--max-context");
+            if (std::string_view(value) == "auto") {
+                options.max_context_auto = true;
+            } else {
+                options.max_context =
+                    static_cast<std::uint32_t>(parse_nonnegative_int(value, "max-context"));
+            }
         } else if (arg == "--kv-capacity") {
             options.kv_capacity  = parse_kv_capacity(require_value("--kv-capacity"));
             kv_capacity_explicit = true;
+        } else if (arg == "--kv-headroom-mib") {
+            const std::uint64_t mib = parse_u64(require_value("--kv-headroom-mib"), "kv-headroom");
+            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--kv-headroom-mib is out of range");
+            }
+            kv_headroom_bytes    = static_cast<std::size_t>(mib) << 20;
+            kv_headroom_explicit = true;
         } else if (arg == "--max-concurrency") {
             options.max_concurrency = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-concurrency"), "max-concurrency"));
@@ -348,14 +366,28 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         }
     }
     if (!kv_capacity_explicit) {
-        options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+        if (options.max_context_auto) {
+            options.kv_capacity_follows_max_context = true;
+        } else {
+            options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+        }
+    }
+    if (kv_headroom_explicit) {
+        // The headroom only exists on the automatic sizing policy; an explicit pool consumes
+        // exactly the requested tokens, and a following pool inherits the resolved context.
+        if (options.kv_capacity.mode != KvCapacityMode::Automatic) {
+            throw std::invalid_argument("--kv-headroom-mib requires --kv-capacity auto");
+        }
+        options.kv_capacity.automatic_headroom_bytes = kv_headroom_bytes;
     }
     options.context_cache.enabled = options.allow_prefix_reuse;
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");
     }
     if (options.max_context == 0) { throw std::invalid_argument("--max-context must be positive"); }
-    if (options.kv_capacity.mode == KvCapacityMode::Explicit &&
+    // With --max-context auto the ceiling is resolved at Engine startup, where the
+    // kv-capacity-versus-context bound is enforced against the resolved value.
+    if (!options.max_context_auto && options.kv_capacity.mode == KvCapacityMode::Explicit &&
         options.kv_capacity.explicit_tokens < options.max_context) {
         throw std::invalid_argument("--kv-capacity must be at least --max-context");
     }

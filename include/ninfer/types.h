@@ -149,6 +149,13 @@ struct EngineOptions {
     EnginePurpose purpose              = EnginePurpose::Generation;
     int device                         = 0;
     std::uint32_t max_context          = 2048; // Logical ceiling of one request or score window.
+    // When true, startup replaces max_context with the largest value whose complete runtime
+    // layout (KV floor, workspace, Graph allowance) fits the device memory remaining after
+    // weights; the value stored here is a placeholder until then.
+    bool max_context_auto              = false;
+    // When true, startup derives kv_capacity from the resolved max_context (an explicit
+    // one-context capacity), mirroring the CLI/server default that omits --kv-capacity.
+    bool kv_capacity_follows_max_context = false;
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(2048);
     std::uint32_t max_concurrency      = 1;
     std::uint32_t max_pending_requests = 16;
@@ -928,6 +935,7 @@ struct VisionWorkspaceMemorySummary {
 struct MemorySummary {
     int device                                = 0;
     std::uint32_t max_context                 = 0;
+    std::uint32_t max_context_position_limit  = 0; // Model position capacity bounding max_context.
     KvCapacityMode kv_capacity_mode           = KvCapacityMode::Explicit;
     std::uint32_t kv_capacity                 = 0; // Resolved page-aligned Main KV capacity.
     std::uint32_t kv_capacity_page_groups     = 0;
@@ -946,6 +954,7 @@ struct MemorySummary {
     std::size_t planned_slack_bytes               = 0;
     std::size_t workspace_logical_peak_bytes      = 0;
     std::size_t cuda_graph_allowance_bytes        = 0;
+    std::size_t cuda_graph_measured_bytes         = 0; // Driver state measured after graphs.
     std::size_t kv_payload_bytes                  = 0;
     // One shared physical Host context backing. Reserved bytes are included in occupied bytes;
     // State/KV occupancy below is a breakdown and must not be added to this ledger again.

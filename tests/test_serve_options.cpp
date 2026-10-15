@@ -403,6 +403,68 @@ int main() {
                               ninfer::kDefaultKvCapacityHeadroomBytes,
                       "--kv-capacity auto did not select automatic sizing");
 
+    const ServeOptions auto_context =
+        parse({"ninfer-serve", "model.ninfer", "--max-context", "auto"});
+    failures += check(auto_context.max_context_auto,
+                      "--max-context auto did not select automatic context sizing");
+    failures += check(auto_context.kv_capacity_follows_max_context,
+                      "omitted --kv-capacity did not follow an automatic --max-context");
+    const ServeOptions auto_context_explicit_kv =
+        parse({"ninfer-serve", "model.ninfer", "--max-context", "auto", "--kv-capacity", "32768"});
+    failures +=
+        check(auto_context_explicit_kv.max_context_auto &&
+                  !auto_context_explicit_kv.kv_capacity_follows_max_context &&
+                  auto_context_explicit_kv.kv_capacity.mode == ninfer::KvCapacityMode::Explicit &&
+                  auto_context_explicit_kv.kv_capacity.explicit_tokens == 32768,
+              "an explicit --kv-capacity lost its value next to automatic context");
+    bool auto_context_numeric_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--max-context", "auto16384"});
+    } catch (const std::invalid_argument&) { auto_context_numeric_rejected = true; }
+    failures += check(auto_context_numeric_rejected,
+                      "a numeric --max-context was mangled into the automatic flag");
+
+    const ServeOptions headroom = parse(
+        {"ninfer-serve", "model.ninfer", "--kv-capacity", "auto", "--kv-headroom-mib", "512"});
+    failures += check(headroom.kv_capacity.mode == ninfer::KvCapacityMode::Automatic &&
+                          headroom.kv_capacity.automatic_headroom_bytes == 512ULL * 1024 * 1024,
+                      "--kv-headroom-mib did not override the automatic headroom");
+    const ServeOptions headroom_zero_first =
+        parse({"ninfer-serve", "model.ninfer", "--kv-headroom-mib", "0", "--kv-capacity", "auto"});
+    failures += check(headroom_zero_first.kv_capacity.mode == ninfer::KvCapacityMode::Automatic &&
+                          headroom_zero_first.kv_capacity.automatic_headroom_bytes == 0,
+                      "--kv-headroom-mib 0 did not disable the headroom before --kv-capacity");
+    bool headroom_without_auto_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--kv-headroom-mib", "512"});
+    } catch (const std::invalid_argument&) { headroom_without_auto_rejected = true; }
+    failures += check(headroom_without_auto_rejected,
+                      "--kv-headroom-mib was accepted without --kv-capacity auto");
+    bool headroom_explicit_kv_rejected = false;
+    try {
+        (void)parse(
+            {"ninfer-serve", "model.ninfer", "--kv-capacity", "8192", "--kv-headroom-mib", "512"});
+    } catch (const std::invalid_argument&) { headroom_explicit_kv_rejected = true; }
+    failures += check(headroom_explicit_kv_rejected,
+                      "--kv-headroom-mib was accepted with an explicit --kv-capacity");
+    bool headroom_following_kv_rejected = false;
+    try {
+        (void)parse(
+            {"ninfer-serve", "model.ninfer", "--max-context", "auto", "--kv-headroom-mib", "512"});
+    } catch (const std::invalid_argument&) { headroom_following_kv_rejected = true; }
+    failures += check(headroom_following_kv_rejected,
+                      "--kv-headroom-mib was accepted with a following --kv-capacity");
+    bool headroom_out_of_range_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--kv-capacity", "auto", "--kv-headroom-mib",
+                     "17592186044416"});
+    } catch (const std::invalid_argument&) { headroom_out_of_range_rejected = true; }
+    failures +=
+        check(headroom_out_of_range_rejected, "--kv-headroom-mib overflowed the byte conversion");
+    failures +=
+        check(serve_usage_text("ninfer-serve").find("--kv-headroom-mib") != std::string::npos,
+              "serve help omits --kv-headroom-mib");
+
     const ServeOptions logged = parse({"ninfer-serve", "model.ninfer", "--request-log-jsonl",
                                        "requests.jsonl", "--api-key", "do-not-log"});
     failures += check(logged.request_log_jsonl == "requests.jsonl",

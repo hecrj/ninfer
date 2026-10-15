@@ -448,6 +448,33 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                   product::format_pretty_count(memory.kv_capacity_max_page_groups),
                   product::format_pretty_bytes(memory.runtime_reservation_bytes),
                   product::format_pretty_bytes(memory.available_after_startup_bytes));
+    if (engine.max_context_auto) {
+        // Explain why the automatic ceiling stopped where it did: the complete startup layout
+        // (KV floor, workspace, Graph allowance) must fit the free memory left after the
+        // KV sizing headroom, which automatic pool sizing reserves.
+        logger_->info(
+            "capacity | auto context {} of {} | layout budget {} of {} after weights | headroom {}",
+            product::format_pretty_count(memory.max_context),
+            product::format_pretty_count(memory.max_context_position_limit),
+            product::format_pretty_bytes(memory.available_after_weights_bytes -
+                                         memory.kv_capacity_headroom_bytes),
+            product::format_pretty_bytes(memory.available_after_weights_bytes),
+            product::format_pretty_bytes(memory.kv_capacity_headroom_bytes));
+    }
+    if (memory.cuda_graph_measured_bytes > memory.cuda_graph_allowance_bytes) {
+        // The KV pool was sized for the graph allowance; if the driver materialized more graph
+        // state than the bound predicts, runtime headroom is smaller than planned. Surface it so
+        // the allowance constant can be calibrated (or the config reduced) rather than silently
+        // consuming the planned slack.
+        logger_->warn(
+            "capacity | CUDA graph state {} exceeded the planned allowance {} by {}; runtime "
+            "headroom is reduced by that amount — raise the graph allowance or lower "
+            "max_concurrency",
+            product::format_pretty_bytes(memory.cuda_graph_measured_bytes),
+            product::format_pretty_bytes(memory.cuda_graph_allowance_bytes),
+            product::format_pretty_bytes(memory.cuda_graph_measured_bytes -
+                                         memory.cuda_graph_allowance_bytes));
+    }
 
     logger_->info("context | history {} | {} active + {} extra device states | host {}",
                   cache.enabled ? "on" : "off", engine.max_concurrency, *cache.device_state_slots,
@@ -461,12 +488,13 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
     }
 
     logger_->debug("memory ledger | after weights {} | after startup {} | headroom {} | slack {} | "
-                   "CUDA graphs {}",
+                   "CUDA graphs {} allowance / {} measured",
                    product::format_pretty_bytes(memory.available_after_weights_bytes),
                    product::format_pretty_bytes(memory.available_after_startup_bytes),
                    product::format_pretty_bytes(memory.kv_capacity_headroom_bytes),
                    product::format_pretty_bytes(memory.planned_slack_bytes),
-                   product::format_pretty_bytes(memory.cuda_graph_allowance_bytes));
+                   product::format_pretty_bytes(memory.cuda_graph_allowance_bytes),
+                   product::format_pretty_bytes(memory.cuda_graph_measured_bytes));
     logger_->debug("context cost | transfer {} | prefill {} | hardware {} | prefill signature {}",
                    ninfer::context_cost_preset_source_name(context_cost.transfer_source),
                    ninfer::context_cost_preset_source_name(context_cost.prefill_source),

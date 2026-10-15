@@ -308,6 +308,8 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     engine_options.chat_template_path       = options_.chat_template_path;
     engine_options.device                   = options_.device;
     engine_options.max_context              = options_.max_context;
+    engine_options.max_context_auto         = options_.max_context_auto;
+    engine_options.kv_capacity_follows_max_context = options_.kv_capacity_follows_max_context;
     engine_options.kv_capacity              = options_.kv_capacity;
     engine_options.max_concurrency          = options_.max_concurrency;
     engine_options.max_pending_requests     = options_.max_pending_requests;

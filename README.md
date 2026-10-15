@@ -248,7 +248,9 @@ The product boundary remains intentionally small:
 - parsed tool calls are returned to the client; NInfer does not execute tools;
 - the in-tree C++ headers are not distributed as an installed SDK.
 
-`--max-context` is each sequence's logical limit. `--kv-capacity` sizes the shared Main Text KV pool
+`--max-context` is each sequence's logical limit; `auto` resolves the longest per-request ceiling
+whose complete runtime layout fits the device memory remaining after weights, bounded by the
+model position capacity. `--kv-capacity` sizes the shared Main Text KV pool
 used by active requests and retained prefixes; `auto` resolves the largest legal capacity at
 startup from the memory remaining after weights while keeping 1 GiB of sizing headroom. Explicit
 capacities remain fixed for the process lifetime.

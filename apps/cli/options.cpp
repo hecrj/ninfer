@@ -82,7 +82,8 @@ ReasoningEffort parse_reasoning_effort(std::string_view text) {
 std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> (--prompt <text>|--messages <messages.json>)\n"
-           "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
+           "       [--max-context N|auto] [--kv-capacity N|auto] [--kv-headroom-mib N] "
+           "[--prefill-chunk N] [--max-new N]\n"
            "       [--device N]\n"
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens "
            "N]\n"
@@ -106,7 +107,10 @@ std::string usage_text(const char* argv0) {
            "toward --max-new.\n"
            "--kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom.\n"
+           " MiB of sizing headroom; --kv-headroom-mib overrides it in MiB (0 disables it).\n"
+           "--max-context auto resolves the longest per-request context whose complete runtime "
+           "layout fits the remaining GPU memory, bounded by the model position capacity; "
+           "omitting --kv-capacity then sizes the pool to one resolved context.\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
            "individual fields.\n";
 }
@@ -120,6 +124,8 @@ Options parse_options(int argc, char** argv) {
     if (argc < 2) { throw std::invalid_argument(".ninfer model path is required"); }
     options.artifact_path     = argv[1];
     bool kv_capacity_explicit = false;
+    bool kv_headroom_explicit     = false;
+    std::size_t kv_headroom_bytes = 0;
 
     for (int i = 2; i < argc; ++i) {
         const std::string_view arg(argv[i]);
@@ -147,10 +153,22 @@ Options parse_options(int argc, char** argv) {
         } else if (arg == "--max-new") {
             options.max_new = parse_u32(value(arg), "max-new");
         } else if (arg == "--max-context") {
-            options.max_context = parse_u32(value(arg), "max-context");
+            const char* value_text = value(arg);
+            if (std::string_view(value_text) == "auto") {
+                options.max_context_auto = true;
+            } else {
+                options.max_context = parse_u32(value_text, "max-context");
+            }
         } else if (arg == "--kv-capacity") {
             options.kv_capacity  = parse_kv_capacity(value(arg));
             kv_capacity_explicit = true;
+        } else if (arg == "--kv-headroom-mib") {
+            const std::uint64_t mib = parse_u64(value(arg), "kv-headroom");
+            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--kv-headroom-mib is out of range");
+            }
+            kv_headroom_bytes    = static_cast<std::size_t>(mib) << 20;
+            kv_headroom_explicit = true;
         } else if (arg == "--prefill-chunk") {
             options.prefill_chunk = parse_u32(value(arg), "prefill-chunk");
         } else if (arg == "--device") {
@@ -226,7 +244,19 @@ Options parse_options(int argc, char** argv) {
         throw std::invalid_argument("select only one of --grammar-file, --json-object, "
                                     "--json-schema-file, --regex or --choice");
     if (!kv_capacity_explicit) {
-        options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+        if (options.max_context_auto) {
+            options.kv_capacity_follows_max_context = true;
+        } else {
+            options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+        }
+    }
+    if (kv_headroom_explicit) {
+        // The headroom only exists on the automatic sizing policy; an explicit pool consumes
+        // exactly the requested tokens, and a following pool inherits the resolved context.
+        if (options.kv_capacity.mode != KvCapacityMode::Automatic) {
+            throw std::invalid_argument("--kv-headroom-mib requires --kv-capacity auto");
+        }
+        options.kv_capacity.automatic_headroom_bytes = kv_headroom_bytes;
     }
 
     const bool has_prompt   = !options.prompt.empty();
@@ -237,7 +267,9 @@ Options parse_options(int argc, char** argv) {
     if (options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
     }
-    if (options.kv_capacity.mode == KvCapacityMode::Explicit &&
+    // With --max-context auto the ceiling is resolved at Engine startup, where the
+    // kv-capacity-versus-context bound is enforced against the resolved value.
+    if (!options.max_context_auto && options.kv_capacity.mode == KvCapacityMode::Explicit &&
         options.kv_capacity.explicit_tokens < options.max_context) {
         throw std::invalid_argument("--kv-capacity must be at least --max-context");
     }

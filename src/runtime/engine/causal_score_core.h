@@ -82,6 +82,8 @@ public:
         std::scoped_lock lock(execution_mutex_);
         MemorySummary out                      = instance_.program->memory_summary();
         const KvCapacityResolution& resolution = instance_.kv_capacity_resolution;
+        out.max_context_position_limit =
+            instance_.parameters.model.config().text.max_position_embeddings;
         out.kv_capacity_mode                   = resolution.mode;
         out.kv_capacity_page_groups            = resolution.main_page_groups;
         out.kv_capacity_max_page_groups        = resolution.maximum_main_page_groups;

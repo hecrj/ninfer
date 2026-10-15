@@ -248,7 +248,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 
 | Option | Meaning | Default |
 |---|---|---:|
-| `--max-context N` | per-sequence logical context ceiling | `2048` |
+| `--max-context N\|auto` | per-sequence logical context ceiling; `auto` resolves the longest ceiling that fits the remaining GPU memory | `2048` |
 | `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `2048` |
 | `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
@@ -324,6 +324,14 @@ and CUDA Graph allowance, while leaving the default 1 GiB automatic headroom
 unallocated. It does not probe allocations or resize the pool at request time. The single-request
 CLI normally leaves the option omitted so it follows
 `--max-context`; the distinction matters primarily to a concurrent Engine or server.
+
+`--max-context auto` resolves the longest per-request ceiling whose complete startup layout fits
+the device memory remaining after weights, bounded by the model's native 262,144-token limit. The
+ceiling's KV floor (one full context of Main KV), the phase workspace, and the CUDA Graph
+allowance must all fit before the KV pool is sized, and the resolution reuses the exact startup
+sizing path, so the resolved ceiling always boots. Omitting `--kv-capacity` with an automatic
+ceiling sizes the pool to one resolved context; `--kv-capacity auto` instead maximizes the pool
+on top of the resolved ceiling's floor.
 
 At Engine startup NInfer reserves model weights, persistent sequence state, one phase-reused
 Program workspace, and a separate CUDA Graph driver allowance. With Vision enabled, that one

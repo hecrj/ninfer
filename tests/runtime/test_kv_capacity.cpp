@@ -51,6 +51,16 @@ int main() {
     failures += check(insufficient_rejected,
                       "automatic KV capacity accepted less than the minimum reservation");
 
+    // The headroom lever (--kv-headroom-mib) trades reserved runtime slack for pool size:
+    // with zero headroom the pool absorbs the full available budget.
+    const auto headroom_zero =
+        ninfer::runtime::resolve_kv_capacity(ninfer::KvCapacityPolicy::automatic(0), curve, 1400);
+    failures += check(headroom_zero.main_page_groups == 5 && headroom_zero.resolved_tokens == 320 &&
+                          headroom_zero.runtime_reservation_bytes == 1384 &&
+                          headroom_zero.planned_slack_bytes == 16 &&
+                          headroom_zero.automatic_headroom_bytes == 0,
+                      "zero automatic headroom did not consume the full available budget");
+
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

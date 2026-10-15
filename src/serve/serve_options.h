@@ -29,6 +29,10 @@ struct ServeOptions {
     std::optional<std::string> model_id_override; // unset => artifact metadata.name
     std::string request_log_jsonl;                // empty => structured request logging disabled
     std::uint32_t max_context          = 8192;
+    // --max-context auto: the Engine resolves the longest context that fits at startup.
+    bool max_context_auto              = false;
+    // --kv-capacity omitted with --max-context auto: the pool follows the resolved context.
+    bool kv_capacity_follows_max_context = false;
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(8192);
     std::uint32_t max_concurrency      = 1;
     std::uint32_t max_pending_requests = 16;

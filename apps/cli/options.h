@@ -26,6 +26,10 @@ struct Options {
 
     std::uint32_t max_new        = 128;
     std::uint32_t max_context    = 2048;
+    // --max-context auto: the Engine resolves the longest context that fits at startup.
+    bool max_context_auto        = false;
+    // --kv-capacity omitted with --max-context auto: the pool follows the resolved context.
+    bool kv_capacity_follows_max_context = false;
     KvCapacityPolicy kv_capacity = KvCapacityPolicy::explicit_capacity(2048);
     std::uint32_t prefill_chunk  = 1024;
     int device                   = 0;

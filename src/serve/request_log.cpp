@@ -524,6 +524,8 @@ std::string format_server_start_json(
     record["engine"] =
         Json{{"device", engine_options.device},
              {"max_context", engine_options.max_context},
+             {"max_context_auto", engine_options.max_context_auto},
+             {"max_context_position_limit", memory.max_context_position_limit},
              {"kv_capacity_mode", kv_capacity_mode_name(memory.kv_capacity_mode)},
              {"kv_capacity", memory.kv_capacity},
              {"kv_capacity_page_groups", memory.kv_capacity_page_groups},
@@ -571,6 +573,7 @@ std::string format_server_start_json(
              {"kv_capacity_headroom_bytes", memory.kv_capacity_headroom_bytes},
              {"planned_slack_bytes", memory.planned_slack_bytes},
              {"cuda_graph_allowance_bytes", memory.cuda_graph_allowance_bytes},
+             {"cuda_graph_measured_bytes", memory.cuda_graph_measured_bytes},
              {"kv_payload_bytes", memory.kv_payload_bytes},
              {"host_context_capacity_bytes", memory.host_context_capacity_bytes},
              {"host_context_occupied_bytes", memory.host_context_occupied_bytes},

@@ -222,7 +222,17 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     device.synchronize();
     if (use_cuda_graph) {
         StartupPhaseScope graph_phase(startup_observer, StartupPhase::CudaGraphPrepare);
+        // Measure the driver state the graph family actually materializes (executable graph
+        // structures, parameter uploads, module state, execution storage). The KV pool was
+        // sized for graph_allowance_bytes; the delta against it is reported at startup.
+        std::size_t free_before  = 0;
+        std::size_t total_device = 0;
+        CUDA_CHECK(cudaMemGetInfo(&free_before, &total_device));
         prepare_graphs();
+        device.synchronize();
+        std::size_t free_after = 0;
+        CUDA_CHECK(cudaMemGetInfo(&free_after, &total_device));
+        graph_state_measured_bytes = free_before > free_after ? free_before - free_after : 0;
         graph_phase.complete();
     }
     work.reset();
@@ -468,6 +478,7 @@ MemorySummary ProgramImpl::memory_summary() const noexcept {
     }
     out.workspace_logical_peak_bytes = workspace_logical_peak_bytes;
     out.cuda_graph_allowance_bytes   = graph_allowance_bytes;
+    out.cuda_graph_measured_bytes    = graph_state_measured_bytes;
     out.kv_payload_bytes             = kv_payload_bytes;
     if (host_state_images) { out.host_state_occupied_slots = host_state_images->occupied(); }
     if (host_kv_arena) { out.host_kv_occupied_bytes = host_kv_arena->occupied_bytes(); }

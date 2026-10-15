@@ -518,6 +518,8 @@ void HttpServer::attach(GenerationService& service) {
     if (service_ != nullptr) {
         throw std::logic_error("HTTP generation service is already attached");
     }
+    // The Engine may have resolved an automatic --max-context; report the effective ceiling.
+    options_.max_context = service.engine_options().max_context;
     const ninfer::LoadSummary load = service.load_summary();
     // memory_summary waits for the completed worker boundary, including warmup publication.
     const ninfer::MemorySummary memory  = service.memory_summary();

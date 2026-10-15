@@ -117,10 +117,43 @@ int main() {
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "k8v4"});
     failures += check(k8v4.kv_cache == ninfer::KvCacheStorage::Fp8KeyNvfp4Value,
                       "--kv-dtype k8v4 did not select asymmetric K8V4 KV");
+    const ninfer::cli::Options auto_context =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--max-context", "auto"});
+    failures += check(auto_context.max_context_auto,
+                      "--max-context auto did not select automatic context sizing");
+    failures += check(auto_context.kv_capacity_follows_max_context,
+                      "omitted --kv-capacity did not follow an automatic --max-context");
+    const ninfer::cli::Options auto_context_explicit_kv =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--max-context", "auto",
+               "--kv-capacity", "8192"});
+    failures +=
+        check(auto_context_explicit_kv.max_context_auto &&
+                  !auto_context_explicit_kv.kv_capacity_follows_max_context &&
+                  auto_context_explicit_kv.kv_capacity.mode == ninfer::KvCapacityMode::Explicit &&
+                  auto_context_explicit_kv.kv_capacity.explicit_tokens == 8192,
+              "an explicit --kv-capacity lost its value next to automatic context");
+    const ninfer::cli::Options headroom =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-capacity", "auto",
+               "--kv-headroom-mib", "256"});
+    failures += check(headroom.kv_capacity.mode == ninfer::KvCapacityMode::Automatic &&
+                          headroom.kv_capacity.automatic_headroom_bytes == 256ULL * 1024 * 1024,
+                      "--kv-headroom-mib did not override the automatic headroom");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--kv-headroom-mib", "256"});
+                      }),
+                      "--kv-headroom-mib was accepted without --kv-capacity auto");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--kv-capacity", "8192", "--kv-headroom-mib", "256"});
+                      }),
+                      "--kv-headroom-mib was accepted with an explicit --kv-capacity");
     const std::string help = ninfer::cli::usage_text("ninfer-cli");
     failures +=
         check(help.find("nvfp4") != std::string::npos && help.find("k8v4") != std::string::npos,
               "CLI help omits a production KV storage mode");
+    failures += check(help.find("--kv-headroom-mib") != std::string::npos,
+                      "CLI help omits --kv-headroom-mib");
     const ninfer::cli::Options logging =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--log-level", "debug"});
     failures += check(logging.log_level == ninfer::product::LogLevel::Debug,

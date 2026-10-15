@@ -351,6 +351,7 @@ public:
     const bool causal_scoring;
     const std::size_t kv_payload_bytes;
     const std::size_t graph_allowance_bytes;
+    std::size_t graph_state_measured_bytes = 0; // Driver state materialized by prepare_graphs().
     const WorkspacePlan workspace_plan;
 
     DeviceArena persistent;
